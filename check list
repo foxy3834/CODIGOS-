@@ -1,0 +1,1697 @@
+import sys
+import json
+import os
+from datetime import datetime
+from PySide6.QtWidgets import (
+    QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
+    QPushButton, QLabel, QFrame, QScrollArea, QMessageBox,
+    QCheckBox, QLineEdit, QGridLayout, QTextEdit, QSizePolicy
+)
+from PySide6.QtCore import Qt, QPropertyAnimation, QEasingCurve, QPoint
+from PySide6.QtGui import QFont, QPalette, QColor, QIcon
+
+ARQUIVO = "historico_checklists.json"
+
+
+class BotaoMenu(QPushButton):
+    """Botão estilizado para o menu lateral"""
+    
+    def __init__(self, texto, parent=None):
+        super().__init__(texto, parent)
+        self.setMinimumHeight(45)
+        self.setCursor(Qt.PointingHandCursor)
+        self.setStyleSheet("""
+            QPushButton {
+                background-color: #2b2d42;
+                color: white;
+                border: none;
+                text-align: left;
+                padding-left: 20px;
+                font-size: 12px;
+            }
+            QPushButton:hover {
+                background-color: #4361ee;
+            }
+        """)
+
+
+class CardWidget(QFrame):
+    """Widget card estilizado"""
+    
+    def __init__(self, titulo=None, parent=None):
+        super().__init__(parent)
+        self.setFrameShape(QFrame.StyledPanel)
+        self.setStyleSheet("""
+            CardWidget {
+                background-color: white;
+                border: 1px solid #dee2e6;
+                border-radius: 8px;
+            }
+        """)
+        
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+        
+        if titulo:
+            header = QFrame()
+            header.setStyleSheet("""
+                QFrame {
+                    background-color: #4361ee;
+                    border-top-left-radius: 8px;
+                    border-top-right-radius: 8px;
+                }
+            """)
+            header.setMinimumHeight(45)
+            
+            header_layout = QHBoxLayout(header)
+            header_layout.setContentsMargins(15, 0, 15, 0)
+            
+            label_titulo = QLabel(titulo)
+            label_titulo.setStyleSheet("color: white; font-weight: bold; font-size: 13px;")
+            header_layout.addWidget(label_titulo)
+            
+            layout.addWidget(header)
+        
+        self.conteudo = QFrame()
+        self.conteudo.setStyleSheet("background-color: white; border-bottom-left-radius: 8px; border-bottom-right-radius: 8px;")
+        conteudo_layout = QVBoxLayout(self.conteudo)
+        conteudo_layout.setContentsMargins(20, 20, 20, 20)
+        conteudo_layout.setSpacing(10)
+        
+        layout.addWidget(self.conteudo)
+    
+    def adicionar_widget(self, widget):
+        """Adiciona widget ao conteúdo do card"""
+        self.conteudo.layout().addWidget(widget)
+    
+    def adicionar_layout(self, layout):
+        """Adiciona layout ao conteúdo do card"""
+        self.conteudo.layout().addLayout(layout)
+
+
+class CheckBoxPersonalizado(QCheckBox):
+    """Checkbox estilizado"""
+    
+    def __init__(self, texto, parent=None):
+        super().__init__(texto, parent)
+        self.setCursor(Qt.PointingHandCursor)
+        self.setStyleSheet("""
+            QCheckBox {
+                spacing: 8px;
+                color: #212529;
+                font-size: 11px;
+            }
+            QCheckBox::indicator {
+                width: 18px;
+                height: 18px;
+                border: 2px solid #dee2e6;
+                border-radius: 4px;
+            }
+            QCheckBox::indicator:checked {
+                background-color: #4361ee;
+                border: 2px solid #4361ee;
+            }
+            QCheckBox::indicator:hover {
+                border: 2px solid #4361ee;
+            }
+        """)
+
+
+class BotaoPersonalizado(QPushButton):
+    """Botão estilizado"""
+    
+    def __init__(self, texto, cor_normal, parent=None):
+        super().__init__(texto, parent)
+        self.cor_normal = cor_normal
+        self.cor_hover = self.escurecer_cor(cor_normal)
+        
+        self.setMinimumHeight(40)
+        self.setMinimumWidth(120)
+        self.setCursor(Qt.PointingHandCursor)
+        self.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {cor_normal};
+                color: white;
+                border: none;
+                border-radius: 5px;
+                font-weight: bold;
+                font-size: 11px;
+                padding: 8px 20px;
+            }}
+            QPushButton:hover {{
+                background-color: {self.cor_hover};
+            }}
+        """)
+    
+    def escurecer_cor(self, cor):
+        """Escurece uma cor hexadecimal"""
+        cor = cor.lstrip('#')
+        r = int(cor[0:2], 16)
+        g = int(cor[2:4], 16)
+        b = int(cor[4:6], 16)
+        
+        r = int(min(255, r * 0.85))
+        g = int(min(255, g * 0.85))
+        b = int(min(255, b * 0.85))
+        
+        return f'#{r:02x}{g:02x}{b:02x}'
+
+
+class HistoricoCard(QFrame):
+    """Card interativo para o histórico - Mostra todas as opções selecionadas"""
+    
+    expandido = False
+    animation = None
+    
+    def __init__(self, item, index, parent_window):
+        super().__init__()
+        self.item = item
+        self.index = index
+        self.parent_window = parent_window
+        self.expandido = False
+        
+        self.setFrameShape(QFrame.StyledPanel)
+        self.setStyleSheet("""
+            QFrame {
+                background-color: white;
+                border: 1px solid #e9ecef;
+                border-radius: 12px;
+                margin: 4px 20px;
+            }
+            QFrame:hover {
+                border: 1px solid #4361ee;
+                background-color: #f8f9fa;
+            }
+        """)
+        
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(16, 16, 16, 16)
+        layout.setSpacing(12)
+        
+        # Header do card (sempre visível)
+        self.criar_header(layout)
+        
+        # Conteúdo detalhado (inicialmente oculto)
+        self.detalhes_frame = QFrame()
+        self.detalhes_frame.setStyleSheet("""
+            QFrame {
+                background-color: #f8f9fa;
+                border-radius: 8px;
+                margin-top: 8px;
+            }
+        """)
+        self.detalhes_layout = QVBoxLayout(self.detalhes_frame)
+        self.detalhes_layout.setContentsMargins(12, 12, 12, 12)
+        self.detalhes_layout.setSpacing(12)
+        
+        self.criar_detalhes_completos()
+        self.detalhes_frame.hide()
+        layout.addWidget(self.detalhes_frame)
+        
+        # Configurar animação
+        self.animation = QPropertyAnimation(self.detalhes_frame, b"maximumHeight")
+        self.animation.setDuration(300)
+        self.animation.setEasingCurve(QEasingCurve.OutCubic)
+    
+    def criar_header(self, layout):
+        """Cria o cabeçalho do card"""
+        header_layout = QHBoxLayout()
+        header_layout.setSpacing(12)
+        
+        # Ícone de status baseado no material
+        icon_text = "🔵" if self.item['material'] == "PVC" else "⚪"
+        self.icon_label = QLabel(icon_text)
+        self.icon_label.setStyleSheet("""
+            QLabel {
+                font-size: 24px;
+                background-color: #e7f5ff;
+                padding: 8px;
+                border-radius: 8px;
+            }
+        """)
+        header_layout.addWidget(self.icon_label)
+        
+        # Informações principais
+        info_layout = QVBoxLayout()
+        info_layout.setSpacing(4)
+        
+        # Nome
+        nome_label = QLabel(self.item['nome'])
+        nome_label.setStyleSheet("""
+            QLabel {
+                font-size: 15px;
+                font-weight: bold;
+                color: #212529;
+            }
+        """)
+        info_layout.addWidget(nome_label)
+        
+        # Tags de informações resumidas
+        tags_layout = QHBoxLayout()
+        tags_layout.setSpacing(8)
+        
+        # Tag Material
+        material_tag = QLabel(f"🔧 {self.item['material']}")
+        material_tag.setStyleSheet("""
+            QLabel {
+                background-color: #e9ecef;
+                padding: 4px 10px;
+                border-radius: 12px;
+                font-size: 11px;
+                color: #495057;
+            }
+        """)
+        tags_layout.addWidget(material_tag)
+        
+        # Tag Planta
+        planta_text = "✅" if self.item['planta'] else "❌"
+        planta_tag = QLabel(f"🏗️ {planta_text}")
+        planta_tag.setStyleSheet("""
+            QLabel {
+                background-color: #e9ecef;
+                padding: 4px 10px;
+                border-radius: 12px;
+                font-size: 11px;
+                color: #495057;
+            }
+        """)
+        tags_layout.addWidget(planta_tag)
+        
+        # Tag Desenho
+        desenho_text = "✅" if self.item['desenho'] else "❌"
+        desenho_tag = QLabel(f"✏️ {desenho_text}")
+        desenho_tag.setStyleSheet("""
+            QLabel {
+                background-color: #e9ecef;
+                padding: 4px 10px;
+                border-radius: 12px;
+                font-size: 11px;
+                color: #495057;
+            }
+        """)
+        tags_layout.addWidget(desenho_tag)
+        
+        # Tag Planilha (se existir)
+        if self.item.get('planilha'):
+            planilha_tag = QLabel("📊 Sim")
+            planilha_tag.setStyleSheet("""
+                QLabel {
+                    background-color: #e9ecef;
+                    padding: 4px 10px;
+                    border-radius: 12px;
+                    font-size: 11px;
+                    color: #495057;
+                }
+            """)
+            tags_layout.addWidget(planilha_tag)
+        
+        tags_layout.addStretch()
+        info_layout.addLayout(tags_layout)
+        
+        header_layout.addLayout(info_layout)
+        header_layout.addStretch()
+        
+        # Data
+        try:
+            data = datetime.fromisoformat(self.item['data'])
+            data_str = data.strftime("%d/%m/%Y")
+        except:
+            data_str = self.item['data'][:10] if len(self.item['data']) >= 10 else self.item['data']
+        
+        data_label = QLabel(data_str)
+        data_label.setStyleSheet("""
+            QLabel {
+                color: #868e96;
+                font-size: 12px;
+                padding: 4px 8px;
+                background-color: #f1f3f5;
+                border-radius: 12px;
+            }
+        """)
+        header_layout.addWidget(data_label)
+        
+        # Botão expandir
+        self.expand_btn = QPushButton("▼")
+        self.expand_btn.setFixedSize(28, 28)
+        self.expand_btn.setCursor(Qt.PointingHandCursor)
+        self.expand_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #f1f3f5;
+                border: none;
+                border-radius: 14px;
+                font-size: 12px;
+                color: #495057;
+            }
+            QPushButton:hover {
+                background-color: #dee2e6;
+            }
+        """)
+        self.expand_btn.clicked.connect(self.toggle_expand)
+        header_layout.addWidget(self.expand_btn)
+        
+        layout.addLayout(header_layout)
+    
+    def criar_detalhes_completos(self):
+        """Cria o conteúdo detalhado completo do card - MOSTRA TUDO QUE FOI SELECIONADO"""
+        
+        # 1. SEÇÃO: 1º PREFERENCE
+        if (self.item.get('var_pasta') or 
+            self.item.get('var_planta') or 
+            self.item.get('var_pref')):
+            
+            pref_frame = QFrame()
+            pref_frame.setStyleSheet("""
+                QFrame {
+                    background-color: white;
+                    border-radius: 6px;
+                }
+            """)
+            pref_layout = QVBoxLayout(pref_frame)
+            pref_layout.setContentsMargins(10, 8, 10, 8)
+            pref_layout.setSpacing(6)
+            
+            # Título da seção
+            titulo_pref = QLabel("⚙️ 1º PREFERENCE")
+            titulo_pref.setStyleSheet("""
+                QLabel {
+                    font-weight: bold;
+                    color: #4361ee;
+                    font-size: 12px;
+                    padding-bottom: 4px;
+                    border-bottom: 1px solid #e9ecef;
+                }
+            """)
+            pref_layout.addWidget(titulo_pref)
+            
+            # Listar todas as opções selecionadas
+            if self.item.get('var_pasta'):
+                item_label = QLabel("  • 📁 Fazer pasta")
+                item_label.setStyleSheet("color: #212529; font-size: 11px; padding: 2px 0;")
+                pref_layout.addWidget(item_label)
+            
+            if self.item.get('var_planta'):
+                item_label = QLabel("  • 📐 Fazer planta")
+                item_label.setStyleSheet("color: #212529; font-size: 11px; padding: 2px 0;")
+                pref_layout.addWidget(item_label)
+            
+            if self.item.get('var_pref'):
+                item_label = QLabel("  • ⭐ Primeiro Preference")
+                item_label.setStyleSheet("color: #212529; font-size: 11px; padding: 2px 0;")
+                pref_layout.addWidget(item_label)
+            
+            self.detalhes_layout.addWidget(pref_frame)
+        
+        # 2. SEÇÃO: EMAILS
+        tem_email = (self.item.get('ev_pref') or self.item.get('ev_desenho') or
+                    self.item.get('ef_pref') or self.item.get('ef_desenho') or
+                    self.item.get('ef_barras') or self.item.get('ef_barras_contra') or
+                    self.item.get('ef_componentes') or self.item.get('ef_componentes_contra'))
+        
+        if tem_email:
+            email_frame = QFrame()
+            email_frame.setStyleSheet("""
+                QFrame {
+                    background-color: white;
+                    border-radius: 6px;
+                }
+            """)
+            email_layout = QVBoxLayout(email_frame)
+            email_layout.setContentsMargins(10, 8, 10, 8)
+            email_layout.setSpacing(6)
+            
+            # Título da seção
+            titulo_email = QLabel("📧 EMAILS")
+            titulo_email.setStyleSheet("""
+                QLabel {
+                    font-weight: bold;
+                    color: #4361ee;
+                    font-size: 12px;
+                    padding-bottom: 4px;
+                    border-bottom: 1px solid #e9ecef;
+                }
+            """)
+            email_layout.addWidget(titulo_email)
+            
+            # Email Vendedor
+            if self.item.get('ev_pref') or self.item.get('ev_desenho'):
+                vendedor_label = QLabel("  👤 Vendedor:")
+                vendedor_label.setStyleSheet("font-weight: bold; color: #495057; font-size: 11px; margin-top: 4px;")
+                email_layout.addWidget(vendedor_label)
+                
+                if self.item.get('ev_pref'):
+                    item_label = QLabel("    • 1º Preference")
+                    item_label.setStyleSheet("color: #212529; font-size: 11px; padding: 2px 0;")
+                    email_layout.addWidget(item_label)
+                
+                if self.item.get('ev_desenho'):
+                    item_label = QLabel("    • Desenho")
+                    item_label.setStyleSheet("color: #212529; font-size: 11px; padding: 2px 0;")
+                    email_layout.addWidget(item_label)
+            
+            # Email Fábrica
+            if (self.item.get('ef_pref') or self.item.get('ef_desenho') or
+                self.item.get('ef_barras') or self.item.get('ef_barras_contra') or
+                self.item.get('ef_componentes') or self.item.get('ef_componentes_contra')):
+                
+                fabrica_label = QLabel("  🏭 Fábrica:")
+                fabrica_label.setStyleSheet("font-weight: bold; color: #495057; font-size: 11px; margin-top: 4px;")
+                email_layout.addWidget(fabrica_label)
+                
+                if self.item.get('ef_pref'):
+                    item_label = QLabel("    • 1º Preference")
+                    item_label.setStyleSheet("color: #212529; font-size: 11px; padding: 2px 0;")
+                    email_layout.addWidget(item_label)
+                
+                if self.item.get('ef_desenho'):
+                    item_label = QLabel("    • Desenho")
+                    item_label.setStyleSheet("color: #212529; font-size: 11px; padding: 2px 0;")
+                    email_layout.addWidget(item_label)
+                
+                if self.item.get('ef_barras'):
+                    item_label = QLabel("    • Relação de barras")
+                    item_label.setStyleSheet("color: #212529; font-size: 11px; padding: 2px 0;")
+                    email_layout.addWidget(item_label)
+                
+                if self.item.get('ef_barras_contra'):
+                    item_label = QLabel("    • Relação de barras contramarco")
+                    item_label.setStyleSheet("color: #212529; font-size: 11px; padding: 2px 0;")
+                    email_layout.addWidget(item_label)
+                
+                if self.item.get('ef_componentes'):
+                    item_label = QLabel("    • Relação de componentes")
+                    item_label.setStyleSheet("color: #212529; font-size: 11px; padding: 2px 0;")
+                    email_layout.addWidget(item_label)
+                
+                if self.item.get('ef_componentes_contra'):
+                    item_label = QLabel("    • Relação de componentes contramarco")
+                    item_label.setStyleSheet("color: #212529; font-size: 11px; padding: 2px 0;")
+                    email_layout.addWidget(item_label)
+            
+            self.detalhes_layout.addWidget(email_frame)
+        
+        # 3. SEÇÃO: EXECUTIVO
+        tem_executivo = (self.item.get('exec_escanear') or 
+                        self.item.get('exec_executivo1') or 
+                        self.item.get('exec_executivo2') or
+                        self.item.get('exec_desenho') or 
+                        self.item.get('exec_planilha') or
+                        self.item.get('exec_obs_dani') or 
+                        self.item.get('exec_acordo_viao') or
+                        self.item.get('exec_atencao'))
+        
+        if tem_executivo:
+            exec_frame = QFrame()
+            exec_frame.setStyleSheet("""
+                QFrame {
+                    background-color: white;
+                    border-radius: 6px;
+                }
+            """)
+            exec_layout = QVBoxLayout(exec_frame)
+            exec_layout.setContentsMargins(10, 8, 10, 8)
+            exec_layout.setSpacing(6)
+            
+            # Título da seção
+            titulo_exec = QLabel("📋 EXECUTIVO")
+            titulo_exec.setStyleSheet("""
+                QLabel {
+                    font-weight: bold;
+                    color: #4361ee;
+                    font-size: 12px;
+                    padding-bottom: 4px;
+                    border-bottom: 1px solid #e9ecef;
+                }
+            """)
+            exec_layout.addWidget(titulo_exec)
+            
+            # Listar todas as opções do Executivo
+            if self.item.get('exec_escanear'):
+                item_label = QLabel("  • 📏 Escanear medição")
+                item_label.setStyleSheet("color: #212529; font-size: 11px; padding: 2px 0;")
+                exec_layout.addWidget(item_label)
+            
+            if self.item.get('exec_executivo1') or self.item.get('exec_executivo2'):
+                item_label = QLabel("  • 📋 Executivo")
+                item_label.setStyleSheet("color: #212529; font-size: 11px; padding: 2px 0;")
+                exec_layout.addWidget(item_label)
+            
+            if self.item.get('exec_desenho'):
+                item_label = QLabel("  • ✏️ Desenho")
+                item_label.setStyleSheet("color: #212529; font-size: 11px; padding: 2px 0;")
+                exec_layout.addWidget(item_label)
+            
+            if self.item.get('exec_planilha'):
+                item_label = QLabel("  • 📊 Planilha")
+                item_label.setStyleSheet("color: #212529; font-size: 11px; padding: 2px 0;")
+                exec_layout.addWidget(item_label)
+            
+            if self.item.get('exec_obs_dani'):
+                item_label = QLabel("  • 👤 Observação Dani")
+                item_label.setStyleSheet("color: #212529; font-size: 11px; padding: 2px 0;")
+                exec_layout.addWidget(item_label)
+            
+            if self.item.get('exec_acordo_viao'):
+                item_label = QLabel("  • 📐 Verificar acordo de vão")
+                item_label.setStyleSheet("color: #212529; font-size: 11px; padding: 2px 0;")
+                exec_layout.addWidget(item_label)
+            
+            if self.item.get('exec_atencao'):
+                item_label = QLabel("  • ⚠️ Atenção")
+                item_label.setStyleSheet("color: #212529; font-size: 11px; padding: 2px 0;")
+                exec_layout.addWidget(item_label)
+            
+            self.detalhes_layout.addWidget(exec_frame)
+        
+        # 4. SEÇÃO: COMENTÁRIOS
+        if self.item.get("comentarios") and self.item["comentarios"].strip():
+            comentarios_frame = QFrame()
+            comentarios_frame.setStyleSheet("""
+                QFrame {
+                    background-color: white;
+                    border-radius: 6px;
+                }
+            """)
+            comentarios_layout = QVBoxLayout(comentarios_frame)
+            comentarios_layout.setContentsMargins(10, 8, 10, 8)
+            comentarios_layout.setSpacing(6)
+            
+            # Título da seção
+            titulo_coment = QLabel("📝 COMENTÁRIOS")
+            titulo_coment.setStyleSheet("""
+                QLabel {
+                    font-weight: bold;
+                    color: #4361ee;
+                    font-size: 12px;
+                    padding-bottom: 4px;
+                    border-bottom: 1px solid #e9ecef;
+                }
+            """)
+            comentarios_layout.addWidget(titulo_coment)
+            
+            # Texto do comentário
+            comentario_text = QLabel(self.item["comentarios"])
+            comentario_text.setStyleSheet("color: #212529; font-size: 11px; padding: 4px;")
+            comentario_text.setWordWrap(True)
+            comentarios_layout.addWidget(comentario_text)
+            
+            self.detalhes_layout.addWidget(comentarios_frame)
+        
+        # 5. BOTÕES DE AÇÃO
+        botoes_layout = QHBoxLayout()
+        botoes_layout.setSpacing(8)
+        botoes_layout.setContentsMargins(0, 8, 0, 0)
+        
+        # Editar
+        btn_editar = QPushButton("✏️ Editar")
+        btn_editar.setCursor(Qt.PointingHandCursor)
+        btn_editar.setStyleSheet("""
+            QPushButton {
+                background-color: #f8961e;
+                color: white;
+                border: none;
+                border-radius: 6px;
+                padding: 8px 16px;
+                font-weight: bold;
+                font-size: 11px;
+            }
+            QPushButton:hover {
+                background-color: #e07b1e;
+            }
+        """)
+        btn_editar.clicked.connect(lambda: self.parent_window.editar_checklist(self.index))
+        botoes_layout.addWidget(btn_editar)
+        
+        # Excluir
+        btn_excluir = QPushButton("🗑️ Excluir")
+        btn_excluir.setCursor(Qt.PointingHandCursor)
+        btn_excluir.setStyleSheet("""
+            QPushButton {
+                background-color: #f72585;
+                color: white;
+                border: none;
+                border-radius: 6px;
+                padding: 8px 16px;
+                font-weight: bold;
+                font-size: 11px;
+            }
+            QPushButton:hover {
+                background-color: #d1144b;
+            }
+        """)
+        btn_excluir.clicked.connect(lambda: self.parent_window.excluir_checklist(self.index))
+        botoes_layout.addWidget(btn_excluir)
+        
+        # Duplicar
+        btn_duplicar = QPushButton("📋 Duplicar")
+        btn_duplicar.setCursor(Qt.PointingHandCursor)
+        btn_duplicar.setStyleSheet("""
+            QPushButton {
+                background-color: #3f37c9;
+                color: white;
+                border: none;
+                border-radius: 6px;
+                padding: 8px 16px;
+                font-weight: bold;
+                font-size: 11px;
+            }
+            QPushButton:hover {
+                background-color: #312ba6;
+            }
+        """)
+        btn_duplicar.clicked.connect(lambda: self.parent_window.duplicar_checklist(self.index))
+        botoes_layout.addWidget(btn_duplicar)
+        
+        botoes_layout.addStretch()
+        self.detalhes_layout.addLayout(botoes_layout)
+    
+    def toggle_expand(self):
+        """Expande ou recolhe o card"""
+        self.expandido = not self.expandido
+        
+        if self.expandido:
+            self.detalhes_frame.show()
+            self.expand_btn.setText("▲")
+            # Animar altura
+            self.detalhes_frame.setMaximumHeight(0)
+            self.animation.setStartValue(0)
+            self.animation.setEndValue(self.detalhes_frame.sizeHint().height())
+            self.animation.start()
+        else:
+            self.expand_btn.setText("▼")
+            # Animar recolhimento
+            self.animation.setStartValue(self.detalhes_frame.height())
+            self.animation.setEndValue(0)
+            self.animation.finished.connect(self.detalhes_frame.hide)
+            self.animation.start()
+
+
+class MainWindow(QMainWindow):
+    """Janela principal do aplicativo"""
+    
+    def __init__(self):
+        super().__init__()
+        
+        self.setWindowTitle("Sistema de Checklists Profissional")
+        self.setMinimumSize(1100, 650)
+        
+        # Variáveis de controle
+        self.checklist = {}
+        self.editando_index = None
+        self.historico_cache = None
+        self.tela_atual = "inicio"  # Controle da tela atual para navegação
+        
+        # Dicionário para armazenar os checkboxes
+        self.checkboxes = {}
+        
+        # Cores
+        self.cores = {
+            'primaria': '#4361ee',
+            'secundaria': '#3f37c9',
+            'sucesso': '#4cc9f0',
+            'perigo': '#f72585',
+            'aviso': '#f8961e',
+            'escura': '#2b2d42',
+            'clara': '#f8f9fa',
+            'cinza': '#adb5bd',
+            'branca': '#ffffff',
+            'texto': '#212529',
+            'texto_claro': '#6c757d'
+        }
+        
+        # Configurar interface
+        self.setup_ui()
+        
+        # Mostrar tela inicial
+        self.mostrar_tela_inicio()
+    
+    def escurecer_cor(self, cor):
+        """Escurece uma cor hexadecimal"""
+        cor = cor.lstrip('#')
+        r = int(cor[0:2], 16)
+        g = int(cor[2:4], 16)
+        b = int(cor[4:6], 16)
+        
+        r = int(min(255, r * 0.85))
+        g = int(min(255, g * 0.85))
+        b = int(min(255, b * 0.85))
+        
+        return f'#{r:02x}{g:02x}{b:02x}'
+    
+    def setup_ui(self):
+        """Configura a interface principal"""
+        # Widget central
+        central_widget = QWidget()
+        self.setCentralWidget(central_widget)
+        
+        # Layout principal
+        main_layout = QHBoxLayout(central_widget)
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.setSpacing(0)
+        
+        # Menu lateral
+        self.menu = QFrame()
+        self.menu.setFixedWidth(260)
+        self.menu.setStyleSheet(f"""
+            QFrame {{
+                background-color: {self.cores['escura']};
+            }}
+        """)
+        
+        menu_layout = QVBoxLayout(self.menu)
+        menu_layout.setContentsMargins(0, 30, 0, 20)
+        menu_layout.setSpacing(10)
+        
+        # Logo
+        logo_label = QLabel("✓ CHECKLIST")
+        logo_label.setStyleSheet(f"""
+            color: {self.cores['branca']};
+            font-size: 22px;
+            font-weight: bold;
+            padding: 10px;
+        """)
+        logo_label.setAlignment(Qt.AlignCenter)
+        menu_layout.addWidget(logo_label)
+        
+        subtitle = QLabel("Sistema de Gestão")
+        subtitle.setStyleSheet(f"color: {self.cores['cinza']}; font-size: 11px;")
+        subtitle.setAlignment(Qt.AlignCenter)
+        menu_layout.addWidget(subtitle)
+        
+        # Separador
+        separator = QFrame()
+        separator.setFixedHeight(1)
+        separator.setStyleSheet(f"background-color: {self.cores['cinza']};")
+        menu_layout.addWidget(separator)
+        menu_layout.addSpacing(10)
+        
+        # Botões do menu
+        self.btn_nova = BotaoMenu("📋 Nova Checklist")
+        self.btn_nova.clicked.connect(self.mostrar_tela_inicio)
+        menu_layout.addWidget(self.btn_nova)
+        
+        self.btn_historico = BotaoMenu("📊 Histórico")
+        self.btn_historico.clicked.connect(self.mostrar_tela_historico)
+        menu_layout.addWidget(self.btn_historico)
+        
+        menu_layout.addStretch()
+        
+        # Status
+        self.status_frame = QFrame()
+        self.status_frame.setStyleSheet(f"background-color: {self.cores['escura']};")
+        status_layout = QVBoxLayout(self.status_frame)
+        
+        self.label_total = QLabel()
+        self.label_total.setStyleSheet(f"color: {self.cores['cinza']}; font-size: 10px;")
+        status_layout.addWidget(self.label_total)
+        
+        self.label_ultima = QLabel()
+        self.label_ultima.setStyleSheet(f"color: {self.cores['cinza']}; font-size: 10px;")
+        status_layout.addWidget(self.label_ultima)
+        
+        menu_layout.addWidget(self.status_frame)
+        
+        main_layout.addWidget(self.menu)
+        
+        # Área de conteúdo
+        self.content_area = QFrame()
+        self.content_area.setStyleSheet(f"background-color: {self.cores['clara']};")
+        content_layout = QVBoxLayout(self.content_area)
+        content_layout.setContentsMargins(0, 0, 0, 0)
+        content_layout.setSpacing(0)
+        
+        # Header fixo
+        self.header = QFrame()
+        self.header.setFixedHeight(60)
+        self.header.setStyleSheet(f"""
+            QFrame {{
+                background-color: {self.cores['branca']};
+                border-bottom: 1px solid {self.cores['cinza']};
+            }}
+        """)
+        
+        header_layout = QHBoxLayout(self.header)
+        header_layout.setContentsMargins(30, 0, 30, 0)
+        
+        self.titulo_header = QLabel()
+        self.titulo_header.setStyleSheet(f"""
+            color: {self.cores['texto']};
+            font-size: 18px;
+            font-weight: bold;
+        """)
+        header_layout.addWidget(self.titulo_header)
+        
+        content_layout.addWidget(self.header)
+        
+        # Área de scroll
+        self.scroll_area = QScrollArea()
+        self.scroll_area.setWidgetResizable(True)
+        self.scroll_area.setFrameShape(QFrame.NoFrame)
+        self.scroll_area.setStyleSheet(f"""
+            QScrollArea {{
+                background-color: {self.cores['clara']};
+                border: none;
+            }}
+            QScrollBar:vertical {{
+                background-color: {self.cores['clara']};
+                width: 12px;
+                border-radius: 6px;
+            }}
+            QScrollBar::handle:vertical {{
+                background-color: {self.cores['cinza']};
+                border-radius: 6px;
+                min-height: 20px;
+            }}
+            QScrollBar::handle:vertical:hover {{
+                background-color: {self.cores['primaria']};
+            }}
+        """)
+        
+        self.scroll_widget = QWidget()
+        self.scroll_widget.setStyleSheet(f"background-color: {self.cores['clara']};")
+        self.scroll_layout = QVBoxLayout(self.scroll_widget)
+        self.scroll_layout.setAlignment(Qt.AlignTop)
+        
+        self.scroll_area.setWidget(self.scroll_widget)
+        content_layout.addWidget(self.scroll_area)
+        
+        main_layout.addWidget(self.content_area)
+        
+        # Atualizar status
+        self.atualizar_status()
+    
+    def limpar_area(self):
+        """Limpa a área de conteúdo"""
+        while self.scroll_layout.count():
+            item = self.scroll_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+        self.checkboxes.clear()
+    
+    def atualizar_header(self, titulo):
+        """Atualiza o título do header"""
+        self.titulo_header.setText(titulo)
+    
+    def atualizar_status(self):
+        """Atualiza informações de status no menu"""
+        total = self.contar_checklists()
+        ultima = self.obter_ultima_checklist()
+        
+        self.label_total.setText(f"📊 Total: {total} checklist(s)")
+        if ultima:
+            self.label_ultima.setText(f"🕐 Última: {ultima}")
+    
+    def contar_checklists(self):
+        """Retorna número total de checklists"""
+        try:
+            return len(self.carregar_historico())
+        except:
+            return 0
+    
+    def obter_ultima_checklist(self):
+        """Retorna data da última checklist"""
+        try:
+            dados = self.carregar_historico()
+            if dados:
+                ultima = dados[-1]
+                data = datetime.fromisoformat(ultima['data'])
+                return data.strftime("%d/%m/%Y")
+        except:
+            pass
+        return None
+    
+    def carregar_historico(self, forcar_recarregar=False):
+        """Carrega histórico com cache"""
+        if self.historico_cache is None or forcar_recarregar:
+            if os.path.exists(ARQUIVO):
+                with open(ARQUIVO, "r", encoding='utf-8') as f:
+                    self.historico_cache = json.load(f)
+            else:
+                self.historico_cache = []
+        return self.historico_cache.copy()
+    
+    def salvar_historico(self, dados):
+        """Salva histórico e atualiza cache"""
+        with open(ARQUIVO, "w", encoding='utf-8') as f:
+            json.dump(dados, f, indent=4, ensure_ascii=False)
+        self.historico_cache = dados
+        self.atualizar_status()
+    
+    def adicionar_botoes_navegacao(self, layout, mostrar_voltar=True, mostrar_avancar=None):
+        """Adiciona botões de navegação (voltar e opcionalmente avançar)"""
+        botoes_frame = QFrame()
+        botoes_frame.setStyleSheet("background-color: transparent;")
+        botoes_layout = QHBoxLayout(botoes_frame)
+        botoes_layout.setContentsMargins(0, 20, 0, 0)
+        botoes_layout.setSpacing(10)
+        
+        if mostrar_voltar and self.tela_atual != "inicio" and self.tela_atual != "historico":
+            btn_voltar = QPushButton("← Voltar")
+            btn_voltar.setCursor(Qt.PointingHandCursor)
+            btn_voltar.setStyleSheet(f"""
+                QPushButton {{
+                    background-color: {self.cores['cinza']};
+                    color: white;
+                    border: none;
+                    border-radius: 5px;
+                    padding: 8px 20px;
+                    font-weight: bold;
+                    font-size: 11px;
+                }}
+                QPushButton:hover {{
+                    background-color: {self.escurecer_cor(self.cores['cinza'])};
+                }}
+            """)
+            btn_voltar.clicked.connect(self.voltar_tela)
+            botoes_layout.addWidget(btn_voltar)
+        
+        botoes_layout.addStretch()
+        
+        if mostrar_avancar:
+            btn_avancar = QPushButton(mostrar_avancar["texto"])
+            btn_avancar.setCursor(Qt.PointingHandCursor)
+            btn_avancar.setStyleSheet(f"""
+                QPushButton {{
+                    background-color: {mostrar_avancar['cor']};
+                    color: white;
+                    border: none;
+                    border-radius: 5px;
+                    padding: 8px 20px;
+                    font-weight: bold;
+                    font-size: 11px;
+                }}
+                QPushButton:hover {{
+                    background-color: {self.escurecer_cor(mostrar_avancar['cor'])};
+                }}
+            """)
+            btn_avancar.clicked.connect(mostrar_avancar["comando"])
+            botoes_layout.addWidget(btn_avancar)
+        
+        layout.addWidget(botoes_frame)
+    
+    def voltar_tela(self):
+        """Navega para a tela anterior"""
+        if self.tela_atual == "material":
+            self.mostrar_tela_inicio()
+        elif self.tela_atual == "planta":
+            self.mostrar_tela_material()
+        elif self.tela_atual == "desenho":
+            self.mostrar_tela_planta()
+        elif self.tela_atual == "preference":
+            self.mostrar_tela_desenho()
+        elif self.tela_atual == "email":
+            self.mostrar_tela_preference()
+        elif self.tela_atual == "pergunta_planilha":
+            self.mostrar_tela_email()
+        elif self.tela_atual == "executivo_parte1":
+            self.mostrar_pergunta_planilha()
+        elif self.tela_atual == "executivo_parte2":
+            self.mostrar_executivo_parte1()
+    
+    def mostrar_tela_inicio(self):
+        """Tela inicial"""
+        self.limpar_area()
+        self.atualizar_header("📋 Nova Checklist")
+        self.tela_atual = "inicio"
+        
+        # Container central
+        container = QWidget()
+        container_layout = QVBoxLayout(container)
+        container_layout.setAlignment(Qt.AlignCenter)
+        
+        # Ícone
+        icon_label = QLabel("✓")
+        icon_label.setStyleSheet(f"""
+            color: {self.cores['primaria']};
+            font-size: 64px;
+            font-weight: bold;
+        """)
+        icon_label.setAlignment(Qt.AlignCenter)
+        container_layout.addWidget(icon_label)
+        
+        # Card
+        card = CardWidget("Nova Checklist")
+        
+        # Campo nome
+        label_nome = QLabel("Nome da Checklist:")
+        label_nome.setStyleSheet(f"color: {self.cores['texto']}; font-size: 12px;")
+        card.adicionar_widget(label_nome)
+        
+        self.nome_entry = QLineEdit()
+        self.nome_entry.setMinimumHeight(35)
+        self.nome_entry.setStyleSheet(f"""
+            QLineEdit {{
+                border: 1px solid {self.cores['cinza']};
+                border-radius: 5px;
+                padding: 5px 10px;
+                font-size: 12px;
+            }}
+            QLineEdit:focus {{
+                border: 2px solid {self.cores['primaria']};
+            }}
+        """)
+        self.nome_entry.returnPressed.connect(self.validar_e_continuar)
+        
+        # Se estiver editando, preencher o nome
+        if self.editando_index is not None and "nome" in self.checklist:
+            self.nome_entry.setText(self.checklist["nome"])
+        else:
+            self.nome_entry.clear()
+        
+        card.adicionar_widget(self.nome_entry)
+        
+        container_layout.addWidget(card)
+        
+        # Botão continuar (sem botão voltar na tela inicial)
+        avancar = {"texto": "Continuar →", "cor": self.cores['primaria'], "comando": self.validar_e_continuar}
+        self.adicionar_botoes_navegacao(container_layout, mostrar_voltar=False, mostrar_avancar=avancar)
+        
+        self.scroll_layout.addWidget(container)
+        
+        # Focar no campo
+        self.nome_entry.setFocus()
+    
+    def validar_e_continuar(self):
+        """Valida nome e continua"""
+        nome = self.nome_entry.text().strip()
+        
+        if not nome:
+            QMessageBox.warning(
+                self,
+                "Aviso",
+                "Por favor, digite um nome para a checklist"
+            )
+            return
+        
+        # Se estiver editando, manter os dados existentes
+        if self.editando_index is not None:
+            self.checklist["nome"] = nome
+        else:
+            self.checklist = {
+                "nome": nome,
+                "data": datetime.now().isoformat(),
+                "material": "",
+                "planta": False,
+                "desenho": False,
+                "planilha": False,
+                "comentarios": ""
+            }
+        
+        self.mostrar_tela_material()
+    
+    def mostrar_tela_material(self):
+        """Tela de seleção de material"""
+        self.limpar_area()
+        self.atualizar_header("🔧 Material")
+        self.tela_atual = "material"
+        
+        container = QWidget()
+        container_layout = QVBoxLayout(container)
+        container_layout.setAlignment(Qt.AlignCenter)
+        
+        card = CardWidget("Selecione o Material")
+        
+        label = QLabel("Escolha o tipo de material:")
+        label.setStyleSheet(f"color: {self.cores['texto_claro']}; font-size: 12px;")
+        card.adicionar_widget(label)
+        
+        # Botões material
+        btn_pvc = BotaoPersonalizado("🔵 PVC", self.cores['primaria'])
+        btn_pvc.clicked.connect(lambda: self.set_material("PVC"))
+        card.adicionar_widget(btn_pvc)
+        
+        btn_aluminio = BotaoPersonalizado("⚪ Alumínio", self.cores['secundaria'])
+        btn_aluminio.clicked.connect(lambda: self.set_material("Alumínio"))
+        card.adicionar_widget(btn_aluminio)
+        
+        container_layout.addWidget(card)
+        
+        # Botões de navegação
+        self.adicionar_botoes_navegacao(container_layout)
+        
+        self.scroll_layout.addWidget(container)
+    
+    def set_material(self, material):
+        """Define material e avança"""
+        self.checklist["material"] = material
+        self.mostrar_tela_planta()
+    
+    def mostrar_tela_planta(self):
+        """Tela de planta"""
+        self.limpar_area()
+        self.atualizar_header("🏗️ Planta")
+        self.tela_atual = "planta"
+        
+        container = QWidget()
+        container_layout = QVBoxLayout(container)
+        container_layout.setAlignment(Qt.AlignCenter)
+        
+        card = CardWidget("Planta do Projeto")
+        
+        label = QLabel("O projeto possui planta?")
+        label.setStyleSheet(f"color: {self.cores['texto_claro']}; font-size: 12px;")
+        card.adicionar_widget(label)
+        
+        # Botões
+        botoes_layout = QHBoxLayout()
+        
+        btn_sim = BotaoPersonalizado("✅ Sim", self.cores['sucesso'])
+        btn_sim.clicked.connect(lambda: self.set_planta(True))
+        botoes_layout.addWidget(btn_sim)
+        
+        btn_nao = BotaoPersonalizado("❌ Não", self.cores['perigo'])
+        btn_nao.clicked.connect(lambda: self.set_planta(False))
+        botoes_layout.addWidget(btn_nao)
+        
+        card.adicionar_layout(botoes_layout)
+        container_layout.addWidget(card)
+        
+        # Botões de navegação
+        self.adicionar_botoes_navegacao(container_layout)
+        
+        self.scroll_layout.addWidget(container)
+    
+    def set_planta(self, valor):
+        """Define valor da planta e avança"""
+        self.checklist["planta"] = valor
+        self.mostrar_tela_desenho()
+    
+    def mostrar_tela_desenho(self):
+        """Tela de desenho"""
+        self.limpar_area()
+        self.atualizar_header("✏️ Desenho")
+        self.tela_atual = "desenho"
+        
+        container = QWidget()
+        container_layout = QVBoxLayout(container)
+        container_layout.setAlignment(Qt.AlignCenter)
+        
+        card = CardWidget("Desenho Técnico")
+        
+        label = QLabel("O projeto possui desenho?")
+        label.setStyleSheet(f"color: {self.cores['texto_claro']}; font-size: 12px;")
+        card.adicionar_widget(label)
+        
+        # Botões
+        botoes_layout = QHBoxLayout()
+        
+        btn_sim = BotaoPersonalizado("✅ Sim", self.cores['sucesso'])
+        btn_sim.clicked.connect(lambda: self.set_desenho(True))
+        botoes_layout.addWidget(btn_sim)
+        
+        btn_nao = BotaoPersonalizado("❌ Não", self.cores['perigo'])
+        btn_nao.clicked.connect(lambda: self.set_desenho(False))
+        botoes_layout.addWidget(btn_nao)
+        
+        card.adicionar_layout(botoes_layout)
+        container_layout.addWidget(card)
+        
+        # Botões de navegação
+        self.adicionar_botoes_navegacao(container_layout)
+        
+        self.scroll_layout.addWidget(container)
+    
+    def set_desenho(self, valor):
+        """Define valor do desenho e avança"""
+        self.checklist["desenho"] = valor
+        self.mostrar_tela_preference()
+    
+    def mostrar_tela_preference(self):
+        """Tela do primeiro Preference"""
+        self.limpar_area()
+        self.atualizar_header("⚙️ 1º Preference")
+        self.tela_atual = "preference"
+        
+        container = QWidget()
+        container_layout = QVBoxLayout(container)
+        container_layout.setAlignment(Qt.AlignTop)
+        
+        card = CardWidget("Configurações do 1º Preference")
+        
+        # Checkboxes
+        cb_pasta = CheckBoxPersonalizado("📁 Fazer pasta")
+        cb_pasta.setChecked(self.checklist.get("var_pasta", False))
+        cb_pasta.toggled.connect(lambda checked: self.checklist.update({"var_pasta": checked}))
+        card.adicionar_widget(cb_pasta)
+        self.checkboxes["var_pasta"] = cb_pasta
+        
+        if self.checklist["planta"]:
+            cb_planta = CheckBoxPersonalizado("📐 Fazer planta")
+            cb_planta.setChecked(self.checklist.get("var_planta", False))
+            cb_planta.toggled.connect(lambda checked: self.checklist.update({"var_planta": checked}))
+            card.adicionar_widget(cb_planta)
+            self.checkboxes["var_planta"] = cb_planta
+        
+        cb_pref = CheckBoxPersonalizado("⭐ Primeiro Preference")
+        cb_pref.setChecked(self.checklist.get("var_pref", False))
+        cb_pref.toggled.connect(lambda checked: self.checklist.update({"var_pref": checked}))
+        card.adicionar_widget(cb_pref)
+        self.checkboxes["var_pref"] = cb_pref
+        
+        container_layout.addWidget(card)
+        
+        # Botões de navegação com avançar
+        avancar = {"texto": "Próximo →", "cor": self.cores['primaria'], "comando": self.mostrar_tela_email}
+        self.adicionar_botoes_navegacao(container_layout, mostrar_voltar=True, mostrar_avancar=avancar)
+        
+        self.scroll_layout.addWidget(container)
+    
+    def mostrar_tela_email(self):
+        """Tela de emails"""
+        self.limpar_area()
+        self.atualizar_header("📧 Emails")
+        self.tela_atual = "email"
+        
+        container = QWidget()
+        container_layout = QVBoxLayout(container)
+        container_layout.setAlignment(Qt.AlignTop)
+        
+        # Email Vendedor
+        card_vendedor = CardWidget("Email do Vendedor")
+        
+        cb_ev_pref = CheckBoxPersonalizado("1º Preference")
+        cb_ev_pref.setChecked(self.checklist.get("ev_pref", False))
+        cb_ev_pref.toggled.connect(lambda checked: self.checklist.update({"ev_pref": checked}))
+        card_vendedor.adicionar_widget(cb_ev_pref)
+        self.checkboxes["ev_pref"] = cb_ev_pref
+        
+        cb_ev_desenho = CheckBoxPersonalizado("Desenho")
+        cb_ev_desenho.setChecked(self.checklist.get("ev_desenho", False))
+        cb_ev_desenho.toggled.connect(lambda checked: self.checklist.update({"ev_desenho": checked}))
+        card_vendedor.adicionar_widget(cb_ev_desenho)
+        self.checkboxes["ev_desenho"] = cb_ev_desenho
+        
+        container_layout.addWidget(card_vendedor)
+        
+        # Email Fábrica
+        card_fabrica = CardWidget("Email da Fábrica")
+        
+        cb_ef_pref = CheckBoxPersonalizado("1º Preference")
+        cb_ef_pref.setChecked(self.checklist.get("ef_pref", False))
+        cb_ef_pref.toggled.connect(lambda checked: self.checklist.update({"ef_pref": checked}))
+        card_fabrica.adicionar_widget(cb_ef_pref)
+        self.checkboxes["ef_pref"] = cb_ef_pref
+        
+        if self.checklist["desenho"]:
+            cb_ef_desenho = CheckBoxPersonalizado("Desenho")
+            cb_ef_desenho.setChecked(self.checklist.get("ef_desenho", False))
+            cb_ef_desenho.toggled.connect(lambda checked: self.checklist.update({"ef_desenho": checked}))
+            card_fabrica.adicionar_widget(cb_ef_desenho)
+            self.checkboxes["ef_desenho"] = cb_ef_desenho
+        
+        cb_ef_barras = CheckBoxPersonalizado("Relação de barras")
+        cb_ef_barras.setChecked(self.checklist.get("ef_barras", False))
+        cb_ef_barras.toggled.connect(lambda checked: self.checklist.update({"ef_barras": checked}))
+        card_fabrica.adicionar_widget(cb_ef_barras)
+        self.checkboxes["ef_barras"] = cb_ef_barras
+        
+        cb_ef_barras_contra = CheckBoxPersonalizado("Relação de barras contramarco")
+        cb_ef_barras_contra.setChecked(self.checklist.get("ef_barras_contra", False))
+        cb_ef_barras_contra.toggled.connect(lambda checked: self.checklist.update({"ef_barras_contra": checked}))
+        card_fabrica.adicionar_widget(cb_ef_barras_contra)
+        self.checkboxes["ef_barras_contra"] = cb_ef_barras_contra
+        
+        cb_ef_componentes = CheckBoxPersonalizado("Relação de componentes")
+        cb_ef_componentes.setChecked(self.checklist.get("ef_componentes", False))
+        cb_ef_componentes.toggled.connect(lambda checked: self.checklist.update({"ef_componentes": checked}))
+        card_fabrica.adicionar_widget(cb_ef_componentes)
+        self.checkboxes["ef_componentes"] = cb_ef_componentes
+        
+        cb_ef_componentes_contra = CheckBoxPersonalizado("Relação de componentes contramarco")
+        cb_ef_componentes_contra.setChecked(self.checklist.get("ef_componentes_contra", False))
+        cb_ef_componentes_contra.toggled.connect(lambda checked: self.checklist.update({"ef_componentes_contra": checked}))
+        card_fabrica.adicionar_widget(cb_ef_componentes_contra)
+        self.checkboxes["ef_componentes_contra"] = cb_ef_componentes_contra
+        
+        container_layout.addWidget(card_fabrica)
+        
+        # Botões de navegação para próxima tela (Executivo)
+        avancar = {"texto": "Próximo →", "cor": self.cores['primaria'], "comando": self.mostrar_pergunta_planilha}
+        self.adicionar_botoes_navegacao(container_layout, mostrar_voltar=True, mostrar_avancar=avancar)
+        
+        self.scroll_layout.addWidget(container)
+    
+    def mostrar_pergunta_planilha(self):
+        """Pergunta se tem planilha"""
+        self.limpar_area()
+        self.atualizar_header("📊 Planilha")
+        self.tela_atual = "pergunta_planilha"
+        
+        container = QWidget()
+        container_layout = QVBoxLayout(container)
+        container_layout.setAlignment(Qt.AlignCenter)
+        
+        card = CardWidget("Planilha do Projeto")
+        
+        label = QLabel("Tem planilha?")
+        label.setStyleSheet(f"color: {self.cores['texto_claro']}; font-size: 14px; font-weight: bold;")
+        label.setAlignment(Qt.AlignCenter)
+        card.adicionar_widget(label)
+        
+        # Botões
+        botoes_layout = QHBoxLayout()
+        botoes_layout.setAlignment(Qt.AlignCenter)
+        
+        btn_sim = BotaoPersonalizado("✅ Sim", self.cores['sucesso'])
+        btn_sim.clicked.connect(lambda: self.set_planilha(True))
+        botoes_layout.addWidget(btn_sim)
+        
+        btn_nao = BotaoPersonalizado("❌ Não", self.cores['perigo'])
+        btn_nao.clicked.connect(lambda: self.set_planilha(False))
+        botoes_layout.addWidget(btn_nao)
+        
+        card.adicionar_layout(botoes_layout)
+        container_layout.addWidget(card)
+        
+        # Botões de navegação
+        self.adicionar_botoes_navegacao(container_layout)
+        
+        self.scroll_layout.addWidget(container)
+    
+    def set_planilha(self, valor):
+        """Define se tem planilha e avança"""
+        self.checklist["planilha"] = valor
+        self.mostrar_executivo_parte1()
+    
+    def mostrar_executivo_parte1(self):
+        """Primeira parte do Executivo"""
+        self.limpar_area()
+        self.atualizar_header("📋 Executivo - Parte 1")
+        self.tela_atual = "executivo_parte1"
+        
+        container = QWidget()
+        container_layout = QVBoxLayout(container)
+        container_layout.setAlignment(Qt.AlignTop)
+        
+        card = CardWidget("Configurações do Executivo - Parte 1")
+        
+        # Checkboxes
+        cb_escanear = CheckBoxPersonalizado("📏 Escanear medição")
+        cb_escanear.setChecked(self.checklist.get("exec_escanear", False))
+        cb_escanear.toggled.connect(lambda checked: self.checklist.update({"exec_escanear": checked}))
+        card.adicionar_widget(cb_escanear)
+        self.checkboxes["exec_escanear"] = cb_escanear
+        
+        cb_executivo1 = CheckBoxPersonalizado("📋 Executivo")
+        cb_executivo1.setChecked(self.checklist.get("exec_executivo1", False))
+        cb_executivo1.toggled.connect(lambda checked: self.checklist.update({"exec_executivo1": checked}))
+        card.adicionar_widget(cb_executivo1)
+        self.checkboxes["exec_executivo1"] = cb_executivo1
+        
+        container_layout.addWidget(card)
+        
+        # Botões de navegação
+        avancar = {"texto": "Próximo →", "cor": self.cores['primaria'], "comando": self.mostrar_executivo_parte2}
+        self.adicionar_botoes_navegacao(container_layout, mostrar_voltar=True, mostrar_avancar=avancar)
+        
+        self.scroll_layout.addWidget(container)
+    
+    def mostrar_executivo_parte2(self):
+        """Segunda parte do Executivo"""
+        self.limpar_area()
+        self.atualizar_header("📋 Executivo - Parte 2")
+        self.tela_atual = "executivo_parte2"
+        
+        container = QWidget()
+        container_layout = QVBoxLayout(container)
+        container_layout.setAlignment(Qt.AlignTop)
+        
+        card = CardWidget("Configurações do Executivo - Parte 2")
+        
+        # Checkboxes (sempre visíveis)
+        cb_executivo2 = CheckBoxPersonalizado("📋 Executivo")
+        cb_executivo2.setChecked(self.checklist.get("exec_executivo2", False))
+        cb_executivo2.toggled.connect(lambda checked: self.checklist.update({"exec_executivo2": checked}))
+        card.adicionar_widget(cb_executivo2)
+        self.checkboxes["exec_executivo2"] = cb_executivo2
+        
+        # Desenho (só se foi selecionado "sim" na pergunta "tem desenho")
+        if self.checklist["desenho"]:
+            cb_desenho = CheckBoxPersonalizado("✏️ Desenho")
+            cb_desenho.setChecked(self.checklist.get("exec_desenho", False))
+            cb_desenho.toggled.connect(lambda checked: self.checklist.update({"exec_desenho": checked}))
+            card.adicionar_widget(cb_desenho)
+            self.checkboxes["exec_desenho"] = cb_desenho
+        
+        # Se tem planilha, mostra todas as opções
+        if self.checklist.get("planilha", False):
+            cb_planilha = CheckBoxPersonalizado("📊 Planilha")
+            cb_planilha.setChecked(self.checklist.get("exec_planilha", False))
+            cb_planilha.toggled.connect(lambda checked: self.checklist.update({"exec_planilha": checked}))
+            card.adicionar_widget(cb_planilha)
+            self.checkboxes["exec_planilha"] = cb_planilha
+            
+            cb_obs_dani = CheckBoxPersonalizado("👤 Observação Dani")
+            cb_obs_dani.setChecked(self.checklist.get("exec_obs_dani", False))
+            cb_obs_dani.toggled.connect(lambda checked: self.checklist.update({"exec_obs_dani": checked}))
+            card.adicionar_widget(cb_obs_dani)
+            self.checkboxes["exec_obs_dani"] = cb_obs_dani
+            
+            cb_acordo_viao = CheckBoxPersonalizado("📐 Verificar acordo de vão")
+            cb_acordo_viao.setChecked(self.checklist.get("exec_acordo_viao", False))
+            cb_acordo_viao.toggled.connect(lambda checked: self.checklist.update({"exec_acordo_viao": checked}))
+            card.adicionar_widget(cb_acordo_viao)
+            self.checkboxes["exec_acordo_viao"] = cb_acordo_viao
+            
+            cb_atencao = CheckBoxPersonalizado("⚠️ Atenção")
+            cb_atencao.setChecked(self.checklist.get("exec_atencao", False))
+            cb_atencao.toggled.connect(lambda checked: self.checklist.update({"exec_atencao": checked}))
+            card.adicionar_widget(cb_atencao)
+            self.checkboxes["exec_atencao"] = cb_atencao
+        
+        container_layout.addWidget(card)
+        
+        # Card de Comentários
+        card_comentarios = CardWidget("📝 Comentários")
+        
+        label_comentarios = QLabel("Adicione observações sobre esta checklist:")
+        label_comentarios.setStyleSheet(f"color: {self.cores['texto_claro']}; font-size: 11px;")
+        card_comentarios.adicionar_widget(label_comentarios)
+        
+        self.texto_comentarios = QTextEdit()
+        self.texto_comentarios.setMinimumHeight(100)
+        self.texto_comentarios.setStyleSheet(f"""
+            QTextEdit {{
+                border: 1px solid {self.cores['cinza']};
+                border-radius: 5px;
+                padding: 8px;
+                font-size: 11px;
+            }}
+            QTextEdit:focus {{
+                border: 2px solid {self.cores['primaria']};
+            }}
+        """)
+        
+        # Se estiver editando, carregar comentários existentes
+        if self.editando_index is not None and "comentarios" in self.checklist:
+            self.texto_comentarios.setPlainText(self.checklist["comentarios"])
+        else:
+            self.texto_comentarios.clear()
+        
+        card_comentarios.adicionar_widget(self.texto_comentarios)
+        container_layout.addWidget(card_comentarios)
+        
+        # Botões de navegação com finalizar
+        texto_botao = "✅ Finalizar" if self.editando_index is None else "💾 Salvar Alterações"
+        cor_botao = self.cores['sucesso'] if self.editando_index is None else self.cores['aviso']
+        
+        avancar = {"texto": texto_botao, "cor": cor_botao, "comando": self.finalizar}
+        self.adicionar_botoes_navegacao(container_layout, mostrar_voltar=True, mostrar_avancar=avancar)
+        
+        self.scroll_layout.addWidget(container)
+    
+    def finalizar(self):
+        """Finaliza e salva a checklist"""
+        try:
+            # Salvar comentários
+            self.checklist["comentarios"] = self.texto_comentarios.toPlainText()
+            
+            if self.editando_index is not None:
+                # Modo edição
+                dados = self.carregar_historico()
+                dados[self.editando_index] = self.checklist
+                self.salvar_historico(dados)
+                QMessageBox.information(
+                    self,
+                    "Sucesso",
+                    "✅ Checklist atualizada com sucesso!"
+                )
+            else:
+                # Modo novo
+                dados = self.carregar_historico()
+                dados.append(self.checklist)
+                self.salvar_historico(dados)
+                QMessageBox.information(
+                    self,
+                    "Sucesso",
+                    "✅ Checklist salva com sucesso!"
+                )
+            
+            self.editando_index = None
+            self.mostrar_tela_historico()
+            
+        except Exception as e:
+            QMessageBox.critical(
+                self,
+                "Erro",
+                f"Ocorreu um erro ao salvar: {str(e)}"
+            )
+    
+    def mostrar_tela_historico(self):
+        """Tela de histórico com cards interativos"""
+        self.limpar_area()
+        self.atualizar_header("📊 Histórico de Checklists")
+        self.tela_atual = "historico"
+        
+        # Barra de ferramentas superior
+        toolbar = QFrame()
+        toolbar.setStyleSheet("""
+            QFrame {
+                background-color: transparent;
+                margin: 10px 20px;
+            }
+        """)
+        toolbar_layout = QHBoxLayout(toolbar)
+        toolbar_layout.setContentsMargins(0, 0, 0, 0)
+        
+        # Título da seção
+        titulo_secao = QLabel("Minhas Checklists")
+        titulo_secao.setStyleSheet("""
+            QLabel {
+                font-size: 16px;
+                font-weight: bold;
+                color: #212529;
+            }
+        """)
+        toolbar_layout.addWidget(titulo_secao)
+        
+        toolbar_layout.addStretch()
+        
+        # Botão de atualizar com estilo
+        btn_atualizar = QPushButton("🔄 Atualizar")
+        btn_atualizar.setCursor(Qt.PointingHandCursor)
+        btn_atualizar.setStyleSheet("""
+            QPushButton {
+                background-color: white;
+                color: #212529;
+                border: 1px solid #dee2e6;
+                border-radius: 8px;
+                padding: 8px 16px;
+                font-size: 12px;
+            }
+            QPushButton:hover {
+                background-color: #f8f9fa;
+                border-color: #4361ee;
+            }
+        """)
+        btn_atualizar.clicked.connect(self.mostrar_tela_historico)
+        toolbar_layout.addWidget(btn_atualizar)
+        
+        self.scroll_layout.addWidget(toolbar)
+        
+        # Carregar dados
+        dados = self.carregar_historico(forcar_recarregar=True)
+        
+        if not dados:
+            self.mostrar_tela_vazia()
+            return
+        
+        # Cards interativos
+        for i, item in enumerate(reversed(dados)):
+            index_original = len(dados) - 1 - i
+            card = HistoricoCard(item, index_original, self)
+            self.scroll_layout.addWidget(card)
+        
+        # Espaçador no final
+        self.scroll_layout.addStretch()
+    
+    def mostrar_tela_vazia(self):
+        """Mostra mensagem quando não há checklists"""
+        container = QWidget()
+        container_layout = QVBoxLayout(container)
+        container_layout.setAlignment(Qt.AlignCenter)
+        
+        icon_label = QLabel("📭")
+        icon_label.setStyleSheet(f"""
+            color: {self.cores['cinza']};
+            font-size: 72px;
+        """)
+        icon_label.setAlignment(Qt.AlignCenter)
+        container_layout.addWidget(icon_label)
+        
+        msg1 = QLabel("Nenhuma checklist encontrada")
+        msg1.setStyleSheet(f"""
+            color: {self.cores['texto_claro']};
+            font-size: 16px;
+            font-weight: bold;
+        """)
+        msg1.setAlignment(Qt.AlignCenter)
+        container_layout.addWidget(msg1)
+        
+        msg2 = QLabel("Clique em 'Nova Checklist' para começar")
+        msg2.setStyleSheet(f"color: {self.cores['texto_claro']}; font-size: 12px;")
+        msg2.setAlignment(Qt.AlignCenter)
+        container_layout.addWidget(msg2)
+        
+        btn_nova = BotaoPersonalizado(
+            "📋 Criar Nova Checklist",
+            self.cores['primaria']
+        )
+        btn_nova.clicked.connect(self.mostrar_tela_inicio)
+        container_layout.addWidget(btn_nova)
+        
+        self.scroll_layout.addWidget(container)
+    
+    def editar_checklist(self, index):
+        """Edita checklist existente"""
+        dados = self.carregar_historico()
+        self.checklist = dados[index].copy()
+        self.editando_index = index
+        
+        # Ir para a tela inicial
+        self.mostrar_tela_inicio()
+    
+    def excluir_checklist(self, index):
+        """Exclui checklist com confirmação"""
+        reply = QMessageBox.question(
+            self,
+            "Confirmar Exclusão",
+            "Tem certeza que deseja excluir esta checklist?\n\nEsta ação não pode ser desfeita.",
+            QMessageBox.Yes | QMessageBox.No
+        )
+        
+        if reply == QMessageBox.Yes:
+            dados = self.carregar_historico()
+            dados.pop(index)
+            self.salvar_historico(dados)
+            self.mostrar_tela_historico()
+            QMessageBox.information(self, "Sucesso", "Checklist excluída com sucesso!")
+    
+    def duplicar_checklist(self, index):
+        """Duplica uma checklist existente"""
+        dados = self.carregar_historico()
+        nova = dados[index].copy()
+        nova["nome"] = f"{nova['nome']} (Cópia)"
+        nova["data"] = datetime.now().isoformat()
+        
+        dados.append(nova)
+        self.salvar_historico(dados)
+        self.mostrar_tela_historico()
+        QMessageBox.information(self, "Sucesso", "Checklist duplicada com sucesso!")
+
+
+def main():
+    app = QApplication(sys.argv)
+    
+    # Configurar fonte padrão
+    font = QFont("Segoe UI", 9)
+    app.setFont(font)
+    
+    window = MainWindow()
+    window.show()
+    
+    sys.exit(app.exec())
+
+
+if __name__ == "__main__":
+    main()
